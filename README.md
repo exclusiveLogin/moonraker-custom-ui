@@ -157,3 +157,37 @@ trusted_clients:
 - [ ] Настройки принтера
 - [ ] Графики температуры
 - [ ] Камера (если доступна)
+
+## 🔔 WebSocket события (Moonraker)
+
+Основное событие: `notify_status_update`
+- `params[0].heater_bed.temperature|target`
+- `params[0].extruder.temperature|target`
+- `params[0].print_stats.state|filename|progress|print_duration|total_duration`
+- `params[0].virtual_sdcard.progress`
+
+Подписка, которую используем:
+- Метод: `printer.objects.subscribe`
+- Объекты: `heater_bed[temperature,target]`, `extruder[temperature,target]`, `print_stats[...]`, `virtual_sdcard[progress]`
+
+Формат JSON-RPC кадра:
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "notify_status_update",
+  "params": [
+    {
+      "heater_bed": { "temperature": 60, "target": 60 },
+      "extruder": { "temperature": 210, "target": 210 },
+      "print_stats": {
+        "state": "printing",
+        "filename": "...",
+        "progress": 0.67,
+        "print_duration": 22656,
+        "total_duration": 22748
+      },
+      "virtual_sdcard": { "progress": 0.67 }
+    }
+  ]
+}
+```
