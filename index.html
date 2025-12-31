@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Moonraker Custom UI</title>
+    <link rel="stylesheet" href="styles/main.css">
+</head>
+<body>
+    <div class="app-container">
+        <header class="app-header">
+            <h1>🖨️ Moonraker Custom UI</h1>
+            <div class="connection-status" id="connectionStatus">
+                <span class="status-indicator"></span>
+                <span class="status-text">Отключено</span>
+            </div>
+        </header>
+
+        <main class="app-main">
+            <div class="widgets-grid" id="widgetsGrid">
+                <temperature-widget></temperature-widget>
+                <status-widget></status-widget>
+                <progress-widget></progress-widget>
+            </div>
+        </main>
+    </div>
+
+    <!-- Web Components -->
+    <script type="module" src="js/components/temperature-widget.js"></script>
+    <script type="module" src="js/components/status-widget.js"></script>
+    <script type="module" src="js/components/progress-widget.js"></script>
+    
+    <!-- Core Services -->
+    <script type="module" src="js/config.js"></script>
+    <script type="module" src="js/services/moonraker-api.js"></script>
+    <script type="module" src="js/services/store.js"></script>
+    <script type="module" src="js/app.js"></script>
+</body>
+</html>
+
