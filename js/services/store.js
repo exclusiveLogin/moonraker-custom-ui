@@ -75,16 +75,22 @@ class Store {
      * Обновляет статус печати
      */
     updatePrintStats(printStats) {
+        // Сохраняем предыдущие значения, чтобы не перетирать их, если новые не пришли
+        const prevStats = this.state.printer.printStats;
+        
         // Возможный прогресс может приходить из print_stats.progress (0..1) или virtual_sdcard.progress
         const vsdProgress = printStats?.virtual_sdcard?.progress;
-        const progress = printStats?.progress ?? vsdProgress ?? this.state.printer.printStats.progress ?? 0;
+        const progress = printStats?.progress ?? vsdProgress ?? prevStats.progress ?? 0;
 
         this.state.printer.printStats = {
-            state: printStats?.state || 'idle',
-            filename: printStats?.filename || null,
+            // Сохраняем предыдущий state, если новый не пришел
+            state: printStats?.state ?? prevStats.state ?? 'idle',
+            // Сохраняем предыдущий filename, если новый не пришел
+            filename: printStats?.filename ?? prevStats.filename ?? null,
             progress: progress,
-            printDuration: printStats?.print_duration || 0,
-            totalDuration: printStats?.total_duration || 0
+            // Сохраняем предыдущие значения, если новые не пришли
+            printDuration: printStats?.print_duration ?? prevStats.printDuration ?? 0,
+            totalDuration: printStats?.total_duration ?? prevStats.totalDuration ?? 0
         };
         this.state.connection.lastUpdate = new Date();
         this.notifySubscribers();
