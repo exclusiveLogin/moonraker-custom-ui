@@ -16,6 +16,7 @@ class MoonrakerAPI {
         this.pendingRequests = new Map(); // Хранит промисы ожидающих запросов
         this.onStatusUpdate = null; // Callback для обновлений статуса
         this.isSubscribed = false;
+        this.connectionAttempt = 0; // Счетчик попыток подключения
     }
 
     /**
@@ -25,26 +26,39 @@ class MoonrakerAPI {
         return new Promise((resolve, reject) => {
             try {
                 let wsUrl = this.wsUrl + '/websocket';
-                if (this.apiKey) {
+                
+                // Логика подключения:
+                // 1. Если есть API ключ - используем его в URL (работает и с force_logins: true, и без)
+                // 2. Если нет API ключа, но есть username/password - пробуем без токена, затем access.login
+                // 3. Если первая попытка без токена не удалась (403) - пробуем С токеном в URL
+                const hasTokenInUrl = this.apiKey && (!this.username || this.connectionAttempt === 1);
+                if (hasTokenInUrl) {
                     wsUrl += `?token=${this.apiKey}`;
                 }
                 
-                console.log('[MoonrakerAPI] Connecting to WebSocket:', wsUrl);
+                console.log('[MoonrakerAPI] Connecting to WebSocket:', wsUrl.replace(/token=[^&]+/, 'token=***'));
                 this.websocket = new WebSocket(wsUrl);
 
                 this.websocket.onopen = async () => {
                     console.log('[MoonrakerAPI] WebSocket connected');
                     this.reconnectAttempts = 0;
+                    this.connectionAttempt = 0; // Сбрасываем счетчик при успешном подключении
                     
-            // Авторизуемся, если есть креды/ключ
-            try {
-                await this.authenticate();
-                console.log('[MoonrakerAPI] Authentication successful');
-            } catch (authError) {
-                console.error('[MoonrakerAPI] Authentication failed:', authError);
-                reject(authError);
-                return;
-            }
+                    // Авторизуемся, если есть креды/ключ
+                    // Если токен был в URL, авторизация может уже пройти на этапе handshake
+                    if (!hasTokenInUrl || (this.username && this.password)) {
+                        try {
+                            await this.authenticate();
+                            console.log('[MoonrakerAPI] Authentication successful');
+                        } catch (authError) {
+                            console.error('[MoonrakerAPI] Authentication failed:', authError);
+                            this.websocket.close();
+                            reject(authError);
+                            return;
+                        }
+                    } else {
+                        console.log('[MoonrakerAPI] Using token-based authentication (token in URL)');
+                    }
                     
                     resolve();
                     // Подписку делаем позже, после initial load (в App)
@@ -64,16 +78,36 @@ class MoonrakerAPI {
                     reject(error);
                 };
 
-                this.websocket.onclose = () => {
-                    console.log('[MoonrakerAPI] WebSocket disconnected');
+                this.websocket.onclose = (event) => {
+                    const closeCode = event.code;
+                    const closeReason = event.reason || 'Unknown';
+                    
+                    console.log(`[MoonrakerAPI] WebSocket disconnected. Code: ${closeCode}, Reason: ${closeReason}`);
+                    
+                    // Ошибка авторизации (403 обычно приходит как 1008 или 4003)
+                    if ((closeCode === 1008 || closeCode === 4003 || closeCode === 4001) && 
+                        this.username && this.apiKey && this.connectionAttempt === 0) {
+                        // Первая попытка без токена не удалась - пробуем с токеном в URL
+                        console.log('[MoonrakerAPI] First attempt failed, retrying with token in URL...');
+                        this.connectionAttempt = 1;
+                        this.websocket = null;
+                        setTimeout(() => {
+                            this.connect().then(resolve).catch(reject);
+                        }, 500);
+                        return;
+                    }
+                    
                     // Очищаем все pending запросы
                     this.pendingRequests.forEach(({ reject }) => {
-                        reject(new Error('WebSocket disconnected'));
+                        reject(new Error(`WebSocket disconnected: ${closeReason} (code: ${closeCode})`));
                     });
                     this.pendingRequests.clear();
                     
-                    // Пытаемся переподключиться
-                    this.attemptReconnect();
+                    // Пытаемся переподключиться только если это не ошибка авторизации
+                    if (closeCode !== 1008 && closeCode !== 4003 && closeCode !== 4001) {
+                        this.connectionAttempt = 0; // Сбрасываем счетчик для следующей попытки
+                        this.attemptReconnect();
+                    }
                 };
             } catch (error) {
                 console.error('[MoonrakerAPI] WebSocket connection error:', error);
@@ -217,14 +251,39 @@ class MoonrakerAPI {
                 return result;
             } catch (error) {
                 console.error('[MoonrakerAPI] access.login failed with username/password', error);
+                // Если не получилось с username/password, пробуем API ключ через _api_key_user_
+                if (this.apiKey) {
+                    console.log('[MoonrakerAPI] Trying API key authentication via _api_key_user_');
+                    try {
+                        const result = await this.request('access.login', {
+                            username: '_api_key_user_',
+                            password: this.apiKey
+                        });
+                        console.log('[MoonrakerAPI] Login successful via API key');
+                        return result;
+                    } catch (apiKeyError) {
+                        console.error('[MoonrakerAPI] API key authentication also failed', apiKeyError);
+                        throw apiKeyError;
+                    }
+                }
                 throw error;
             }
         }
 
-        // Если логина нет, пробуем только API ключ (некоторые конфиги допускают token в URL)
+        // Если только API ключ - пробуем через _api_key_user_
         if (this.apiKey) {
-            console.warn('[MoonrakerAPI] No username/password provided; relying on token in URL');
-            return;
+            try {
+                const result = await this.request('access.login', {
+                    username: '_api_key_user_',
+                    password: this.apiKey
+                });
+                console.log('[MoonrakerAPI] Login successful via API key');
+                return result;
+            } catch (error) {
+                console.warn('[MoonrakerAPI] API key login failed, relying on token in URL (if provided)');
+                // Если токен был в URL, возможно авторизация уже прошла
+                return;
+            }
         }
 
         // Если нет ни ключа, ни логина — работать не сможем
