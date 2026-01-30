@@ -11,7 +11,7 @@ class Store {
                     hotend: { current: 0, target: 0 }
                 },
                 printStats: {
-                    state: 'idle',
+                    state: 'standby',
                     filename: null,
                     progress: 0,
                     printDuration: 0,
@@ -101,7 +101,7 @@ class Store {
 
         this.state.printer.printStats = {
             // Сохраняем предыдущий state, если новый не пришел
-            state: printStats?.state ?? prevStats.state ?? 'idle',
+            state: printStats?.state ?? prevStats.state ?? 'standby',
             // Сохраняем предыдущий filename, если новый не пришел
             filename: printStats?.filename ?? prevStats.filename ?? null,
             progress: progress,

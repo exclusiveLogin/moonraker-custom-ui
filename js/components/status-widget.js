@@ -84,16 +84,16 @@ class StatusWidget extends HTMLElement {
     }
 
     getStateText(state) {
+        // Официальные статусы Klipper print_stats.state
         const states = {
-            'printing': '🟢 Печать',
-            'paused': '⏸️ Пауза',
-            'complete': '✅ Завершено',
-            'cancelled': '❌ Отменено',
-            'error': '🔴 Ошибка',
-            'idle': '⚪ Ожидание',
-            'standby': '⏳ Ожидание'
+            'standby': '⏳ Ожидание',      // Режим ожидания (до/после печати)
+            'printing': '🟢 Печать',       // Идёт печать
+            'paused': '⏸️ Пауза',          // Печать на паузе
+            'complete': '✅ Завершено',    // Печать успешно завершена
+            'cancelled': '❌ Отменено',    // Печать отменена пользователем
+            'error': '🔴 Ошибка'           // Ошибка во время печати
         };
-        return states[state] || state;
+        return states[state] || `❓ ${state}`;
     }
 
     formatDuration(seconds) {
@@ -128,20 +128,23 @@ class StatusWidget extends HTMLElement {
                 font-weight: 600;
                 color: var(--text-primary);
             }
+            .status-value.status-standby {
+                color: var(--text-secondary);
+            }
             .status-value.status-printing {
-                color: var(--status-printing);
+                color: var(--accent-success);
             }
             .status-value.status-paused {
                 color: var(--accent-warning);
             }
             .status-value.status-complete {
-                color: var(--accent-success);
+                color: var(--accent-info);
+            }
+            .status-value.status-cancelled {
+                color: var(--accent-warning);
             }
             .status-value.status-error {
                 color: var(--accent-error);
-            }
-            .status-value.status-idle {
-                color: var(--status-idle);
             }
         `;
         document.head.appendChild(style);
