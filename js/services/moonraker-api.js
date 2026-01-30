@@ -17,20 +17,50 @@ class MoonrakerAPI {
         this.onStatusUpdate = null; // Callback для обновлений статуса
         this.isSubscribed = false;
         this.connectionAttempt = 0; // Счетчик попыток подключения
+        this.isConnecting = false; // Флаг для предотвращения множественных подключений
+        this.connectPromise = null; // Текущий промис подключения
+    }
+
+    /**
+     * Проверяет, подключен ли WebSocket
+     */
+    isConnected() {
+        return this.websocket && this.websocket.readyState === WebSocket.OPEN;
     }
 
     /**
      * Подключается к WebSocket
      */
     async connect() {
-        return new Promise((resolve, reject) => {
+        // Если уже подключены - возвращаем успех
+        if (this.isConnected()) {
+            console.log('[MoonrakerAPI] Already connected');
+            return Promise.resolve();
+        }
+        
+        // Если уже идет подключение - возвращаем существующий промис
+        if (this.isConnecting && this.connectPromise) {
+            console.log('[MoonrakerAPI] Connection already in progress, waiting...');
+            return this.connectPromise;
+        }
+        
+        this.isConnecting = true;
+        this.isSubscribed = false; // Сбрасываем флаг подписки
+        
+        this.connectPromise = new Promise((resolve, reject) => {
             try {
+                // Закрываем старое соединение если есть
+                if (this.websocket) {
+                    this.websocket.onclose = null; // Отключаем обработчик чтобы не было лишних reconnect
+                    this.websocket.close();
+                    this.websocket = null;
+                }
+                
                 let wsUrl = this.wsUrl + '/websocket';
                 
                 // Логика подключения:
-                // 1. Если есть API ключ - используем его в URL (работает и с force_logins: true, и без)
+                // 1. Если есть API ключ - используем его в URL
                 // 2. Если нет API ключа, но есть username/password - пробуем без токена, затем access.login
-                // 3. Если первая попытка без токена не удалась (403) - пробуем С токеном в URL
                 const hasTokenInUrl = this.apiKey && (!this.username || this.connectionAttempt === 1);
                 if (hasTokenInUrl) {
                     wsUrl += `?token=${this.apiKey}`;
@@ -42,10 +72,10 @@ class MoonrakerAPI {
                 this.websocket.onopen = async () => {
                     console.log('[MoonrakerAPI] WebSocket connected');
                     this.reconnectAttempts = 0;
-                    this.connectionAttempt = 0; // Сбрасываем счетчик при успешном подключении
+                    this.connectionAttempt = 0;
+                    this.isConnecting = false;
                     
                     // Авторизуемся, если есть креды/ключ
-                    // Если токен был в URL, авторизация может уже пройти на этапе handshake
                     if (!hasTokenInUrl || (this.username && this.password)) {
                         try {
                             await this.authenticate();
@@ -61,7 +91,6 @@ class MoonrakerAPI {
                     }
                     
                     resolve();
-                    // Подписку делаем позже, после initial load (в App)
                 };
 
                 this.websocket.onmessage = (event) => {
@@ -75,7 +104,7 @@ class MoonrakerAPI {
 
                 this.websocket.onerror = (error) => {
                     console.error('[MoonrakerAPI] WebSocket error:', error);
-                    reject(error);
+                    // Не reject здесь - onclose тоже вызовется
                 };
 
                 this.websocket.onclose = (event) => {
@@ -83,11 +112,11 @@ class MoonrakerAPI {
                     const closeReason = event.reason || 'Unknown';
                     
                     console.log(`[MoonrakerAPI] WebSocket disconnected. Code: ${closeCode}, Reason: ${closeReason}`);
+                    this.isConnecting = false;
                     
                     // Ошибка авторизации (403 обычно приходит как 1008 или 4003)
                     if ((closeCode === 1008 || closeCode === 4003 || closeCode === 4001) && 
                         this.username && this.apiKey && this.connectionAttempt === 0) {
-                        // Первая попытка без токена не удалась - пробуем с токеном в URL
                         console.log('[MoonrakerAPI] First attempt failed, retrying with token in URL...');
                         this.connectionAttempt = 1;
                         this.websocket = null;
@@ -98,22 +127,22 @@ class MoonrakerAPI {
                     }
                     
                     // Очищаем все pending запросы
-                    this.pendingRequests.forEach(({ reject }) => {
-                        reject(new Error(`WebSocket disconnected: ${closeReason} (code: ${closeCode})`));
+                    this.pendingRequests.forEach(({ reject: rej }) => {
+                        rej(new Error(`WebSocket disconnected: ${closeReason} (code: ${closeCode})`));
                     });
                     this.pendingRequests.clear();
                     
-                    // Пытаемся переподключиться только если это не ошибка авторизации
-                    if (closeCode !== 1008 && closeCode !== 4003 && closeCode !== 4001) {
-                        this.connectionAttempt = 0; // Сбрасываем счетчик для следующей попытки
-                        this.attemptReconnect();
-                    }
+                    // Reject текущий промис
+                    reject(new Error(`WebSocket closed: ${closeReason} (code: ${closeCode})`));
                 };
             } catch (error) {
                 console.error('[MoonrakerAPI] WebSocket connection error:', error);
+                this.isConnecting = false;
                 reject(error);
             }
         });
+        
+        return this.connectPromise;
     }
 
     /**
@@ -229,6 +258,27 @@ class MoonrakerAPI {
     }
 
     /**
+     * Получает данные о toolhead, позиции и вентиляторах
+     * Адаптировано под конфиг QIDI с fan_generic и heater_fan
+     */
+    async getToolheadData() {
+        const result = await this.request('printer.objects.query', {
+            objects: {
+                toolhead: ['position', 'homed_axes'],
+                gcode_move: ['position', 'speed_factor', 'extrude_factor'],
+                // Стандартный part cooling fan
+                fan: ['speed'],
+                // QIDI специфичные вентиляторы
+                'fan_generic cooling_fan': ['speed'],
+                'heater_fan hotend_fan': ['speed'],
+                'fan_generic chamber_circulation_fan': ['speed'],
+                'fan_generic auxiliary_cooling_fan': ['speed']
+            }
+        });
+        return { result };
+    }
+
+    /**
      * Получает информацию о файлах
      */
     async getFiles() {
@@ -292,6 +342,7 @@ class MoonrakerAPI {
 
     /**
      * Подписывается на обновления принтера
+     * Адаптировано под конфиг QIDI с fan_generic и heater_fan
      */
     subscribeToUpdates() {
         if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN) {
@@ -307,7 +358,20 @@ class MoonrakerAPI {
                     heater_bed: ['temperature', 'target'],
                     extruder: ['temperature', 'target'],
                     print_stats: ['state', 'filename', 'progress', 'print_duration', 'total_duration'],
-                    virtual_sdcard: ['progress']
+                    virtual_sdcard: ['progress'],
+                    // Позиция и скорость
+                    toolhead: ['position', 'homed_axes'],
+                    gcode_move: ['position', 'speed_factor', 'extrude_factor'],
+                    // Стандартный вентилятор
+                    fan: ['speed'],
+                    // QIDI специфичные вентиляторы
+                    'fan_generic cooling_fan': ['speed'],
+                    'heater_fan hotend_fan': ['speed'],
+                    'fan_generic chamber_circulation_fan': ['speed'],
+                    'fan_generic auxiliary_cooling_fan': ['speed'],
+                    // Температура камеры
+                    'heater_generic chamber': ['temperature', 'target'],
+                    'temperature_sensor Chamber_Thermal_Protection_Sensor': ['temperature']
                 }
             },
             id: 5434
@@ -317,30 +381,147 @@ class MoonrakerAPI {
         this.isSubscribed = true;
     }
 
+    // ========== Методы управления принтером ==========
+
+    /**
+     * Отправляет G-code команду
+     */
+    async sendGcode(script) {
+        const result = await this.request('printer.gcode.script', { script });
+        return { result };
+    }
+
+    /**
+     * Ставит печать на паузу
+     */
+    async pausePrint() {
+        const result = await this.request('printer.print.pause');
+        return { result };
+    }
+
+    /**
+     * Возобновляет печать
+     */
+    async resumePrint() {
+        const result = await this.request('printer.print.resume');
+        return { result };
+    }
+
+    /**
+     * Отменяет печать
+     */
+    async cancelPrint() {
+        const result = await this.request('printer.print.cancel');
+        return { result };
+    }
+
+    /**
+     * Аварийная остановка
+     */
+    async emergencyStop() {
+        const result = await this.request('printer.emergency_stop');
+        return { result };
+    }
+
+    /**
+     * Запускает печать файла
+     */
+    async startPrint(filename) {
+        const result = await this.request('printer.print.start', { filename });
+        return { result };
+    }
+
+    /**
+     * Получает системную информацию
+     */
+    async getSystemInfo() {
+        const result = await this.request('machine.system_info');
+        return { result };
+    }
+
+    /**
+     * Получает информацию о процессе Moonraker
+     */
+    async getProcStats() {
+        const result = await this.request('machine.proc_stats');
+        return { result };
+    }
+
+    // ========== История печатей (server.history) ==========
+
+    /**
+     * Получает историю печатей
+     */
+    async getHistory(limit = 50, start = 0, order = 'desc') {
+        const result = await this.request('server.history.list', {
+            limit,
+            start,
+            order
+        });
+        return { result };
+    }
+
+    /**
+     * Получает статистику печатей
+     */
+    async getHistoryTotals() {
+        const result = await this.request('server.history.totals');
+        return { result };
+    }
+
+    /**
+     * Получает информацию о конкретной печати
+     */
+    async getHistoryJob(jobId) {
+        const result = await this.request('server.history.get_job', { uid: jobId });
+        return { result };
+    }
+
+    /**
+     * Удаляет запись из истории
+     */
+    async deleteHistoryJob(jobId) {
+        const result = await this.request('server.history.delete_job', { uid: jobId });
+        return { result };
+    }
+
+    // ========== Дополнительные объекты Klipper ==========
+
+    /**
+     * Получает данные датчиков (temperature_sensor, temperature_fan, etc.)
+     */
+    async getSensors() {
+        const result = await this.request('printer.objects.query', {
+            objects: {
+                'temperature_sensor mcu_temp': null,
+                'temperature_sensor raspberry_pi': null,
+                'temperature_fan hotend_fan': null
+            }
+        });
+        return { result };
+    }
+
+    /**
+     * Получает данные о шаговых двигателях
+     */
+    async getStepperInfo() {
+        const result = await this.request('printer.objects.query', {
+            objects: {
+                stepper_enable: null,
+                'tmc2209 stepper_x': ['run_current', 'hold_current'],
+                'tmc2209 stepper_y': ['run_current', 'hold_current'],
+                'tmc2209 stepper_z': ['run_current', 'hold_current'],
+                'tmc2209 extruder': ['run_current', 'hold_current']
+            }
+        });
+        return { result };
+    }
+
     /**
      * Устанавливает callback для обновлений статуса
      */
     setStatusUpdateCallback(callback) {
         this.onStatusUpdate = callback;
-    }
-
-    /**
-     * Попытка переподключения
-     */
-    attemptReconnect() {
-        if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-            console.error('[MoonrakerAPI] Max reconnection attempts reached');
-            return;
-        }
-
-        this.reconnectAttempts++;
-        const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
-        
-        console.log(`[MoonrakerAPI] Attempting to reconnect in ${delay}ms (attempt ${this.reconnectAttempts})`);
-        
-        setTimeout(() => {
-            this.connect().catch(console.error);
-        }, delay);
     }
 
     /**

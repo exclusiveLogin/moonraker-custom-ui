@@ -1,19 +1,14 @@
 /**
  * Главный файл приложения
  */
-import MoonrakerAPI from './services/moonraker-api.js';
+import api from './services/api-instance.js';
 import store from './services/store.js';
-import { config } from './config.js';
 
 class App {
     constructor() {
-        this.api = new MoonrakerAPI(
-            config.moonrakerUrl,
-            config.apiKey,
-            config.username,
-            config.password
-        );
+        this.api = api; // Используем singleton API
         this.connectionStatusEl = document.getElementById('connectionStatus');
+        this.callbackSet = false; // Флаг установки callback
         this.init();
     }
 
@@ -23,13 +18,24 @@ class App {
             this.updateUI(state);
         });
 
-        // Пытаемся подключиться
-        this.connect();
+        // Пытаемся подключиться (не блокируем если не получилось)
+        try {
+            await this.connect();
+        } catch (error) {
+            console.log('[App] Initial connection failed, will retry...');
+        }
 
-        // Периодически проверяем подключение
+        // Периодически проверяем подключение (каждые 10 секунд)
         setInterval(() => {
             this.checkConnection();
-        }, 5000);
+        }, 10000);
+
+        // Периодически обновляем системную информацию (каждые 15 секунд)
+        setInterval(() => {
+            if (store.getState().connection.connected) {
+                this.loadSystemInfo();
+            }
+        }, 15000);
     }
 
     /**
@@ -39,25 +45,29 @@ class App {
         try {
             console.log('[App] Attempting to connect to Moonraker via WebSocket...');
             
-            // Подключаемся к WebSocket (все запросы теперь через WebSocket - нет CORS!)
+            // Подключаемся к WebSocket
             await this.api.connect();
             console.log('[App] WebSocket connected!');
             
-            // Устанавливаем callback для обновлений статуса
-            this.api.setStatusUpdateCallback((status) => {
-                this.handleWebSocketMessage({ method: 'notify_status_update', params: [status] });
-            });
+            // Устанавливаем callback для обновлений статуса (только один раз)
+            if (!this.callbackSet) {
+                this.api.setStatusUpdateCallback((status) => {
+                    this.handleWebSocketMessage({ method: 'notify_status_update', params: [status] });
+                });
+                this.callbackSet = true;
+            }
             
             store.updateConnectionStatus(true);
 
             // Загружаем начальные данные
             await this.loadInitialData();
 
-            // Теперь подписываемся на обновления (после initial load, чтобы не потерять target)
+            // Подписываемся на обновления
             this.api.subscribeToUpdates();
         } catch (error) {
-            console.error('[App] Connection failed:', error);
+            console.error('[App] Connection failed:', error.message);
             store.updateConnectionStatus(false);
+            throw error; // Прокидываем ошибку для обработки в checkConnection
         }
     }
 
@@ -66,8 +76,12 @@ class App {
      */
     async loadInitialData() {
         try {
-            const tempData = await this.api.getTemperature();
-            const printData = await this.api.getPrintStatus();
+            // Загружаем все данные параллельно
+            const [tempData, printData, toolheadData] = await Promise.all([
+                this.api.getTemperature(),
+                this.api.getPrintStatus(),
+                this.api.getToolheadData()
+            ]);
 
             // Обработка данных о температуре
             const tStatus = tempData.result?.status || tempData.result;
@@ -85,8 +99,39 @@ class App {
                 const vsd = pStatus.virtual_sdcard;
                 store.updatePrintStats({ ...ps, virtual_sdcard: vsd });
             }
+
+            // Обработка данных о toolhead и вентиляторах
+            const thStatus = toolheadData.result?.status || toolheadData.result;
+            if (thStatus) {
+                store.updateToolhead(thStatus.toolhead, thStatus.gcode_move);
+                // Передаем весь объект с вентиляторами (включая QIDI fan_generic)
+                store.updateFans(thStatus);
+            }
+
+            // Загружаем системную информацию
+            this.loadSystemInfo();
         } catch (error) {
             console.error('[App] Failed to load initial data:', error);
+        }
+    }
+
+    /**
+     * Загружает системную информацию
+     */
+    async loadSystemInfo() {
+        try {
+            const procStats = await this.api.getProcStats();
+            const stats = procStats.result;
+            
+            if (stats) {
+                store.updateSystemInfo({
+                    cpu_usage: stats.system_cpu_usage?.cpu ?? 0,
+                    memory_usage: stats.system_memory?.percent ?? 0,
+                    uptime: stats.moonraker_stats?.[0]?.time ?? 0
+                });
+            }
+        } catch (error) {
+            console.error('[App] Failed to load system info:', error);
         }
     }
 
@@ -97,6 +142,7 @@ class App {
         if (data.method === 'notify_status_update') {
             const status = data.params[0];
             
+            // Температура
             if (status.heater_bed || status.extruder) {
                 store.updateTemperature(
                     status.heater_bed,
@@ -104,11 +150,25 @@ class App {
                 );
             }
 
+            // Статус печати
             if (status.print_stats) {
                 store.updatePrintStats({
                     ...status.print_stats,
                     virtual_sdcard: status.virtual_sdcard
                 });
+            }
+
+            // Позиция и скорость
+            if (status.toolhead || status.gcode_move) {
+                store.updateToolhead(status.toolhead, status.gcode_move);
+            }
+
+            // Вентиляторы (включая QIDI fan_generic)
+            if (status.fan || status['fan_generic cooling_fan'] || 
+                status.heater_fan || status['heater_fan hotend_fan'] ||
+                status['fan_generic chamber_circulation_fan'] ||
+                status['fan_generic auxiliary_cooling_fan']) {
+                store.updateFans(status);
             }
         }
     }
@@ -118,20 +178,22 @@ class App {
      * Проверяет подключение
      */
     async checkConnection() {
-        try {
-            // Проверяем, что WebSocket подключен
-            if (this.api.websocket && this.api.websocket.readyState === WebSocket.OPEN) {
-                await this.api.getPrinterStatus();
-                if (!store.getState().connection.connected) {
-                    store.updateConnectionStatus(true);
-                }
-            } else {
-                // Переподключаемся, если соединение потеряно
-                store.updateConnectionStatus(false);
-                await this.connect();
+        // Если уже подключен - всё ок
+        if (this.api.isConnected()) {
+            if (!store.getState().connection.connected) {
+                store.updateConnectionStatus(true);
             }
+            return;
+        }
+        
+        // Если не подключен - пробуем подключиться
+        console.log('[App] Connection lost, attempting to reconnect...');
+        store.updateConnectionStatus(false);
+        
+        try {
+            await this.connect();
         } catch (error) {
-            store.updateConnectionStatus(false);
+            console.error('[App] Reconnection failed:', error.message);
         }
     }
 

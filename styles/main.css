@@ -12,9 +12,10 @@
     
     /* Акцентные цвета */
     --accent-primary: #4a9eff;
-    --accent-success: #4caf50;
-    --accent-warning: #ff9800;
-    --accent-error: #f44336;
+    --accent-success: #22c55e;
+    --accent-warning: #f59e0b;
+    --accent-error: #ef4444;
+    --accent-info: #06b6d4;
     
     /* Цвета для принтера */
     --temp-hotend: #ff6b6b;
@@ -29,6 +30,8 @@
     --shadow-lg: 0 8px 16px rgba(0, 0, 0, 0.5);
     --border-color: #404040;
     --border-radius: 8px;
+    --radius-sm: 4px;
+    --radius-md: 8px;
     
     /* Отступы */
     --spacing-xs: 4px;
@@ -121,10 +124,19 @@ body {
 /* ===== Сетка виджетов ===== */
 .widgets-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
     gap: var(--spacing-md);
-    max-width: 1400px;
+    max-width: 1600px;
     margin: 0 auto;
+}
+
+/* Широкие виджеты занимают 2 колонки */
+@media (min-width: 900px) {
+    files-widget,
+    chart-widget,
+    history-widget {
+        grid-column: span 2;
+    }
 }
 
 /* ===== Базовые стили для виджетов ===== */
