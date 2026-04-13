@@ -1,193 +1,102 @@
-# 🖨️ Moonraker Custom UI
+# Moonraker Custom UI
 
-Кастомный веб-интерфейс для управления 3D принтером через Moonraker API.
+> **Статья-урок**: [Klipper и открытая архитектура — почему это правильно](#)
 
-## ✨ Особенности
+Кастомный веб-интерфейс для управления 3D-принтером через Moonraker API. Написан без фреймворков — чистые Web Components, ES6 модули, нативный WebSocket. Proof of concept к статье о том, почему открытая API-архитектура Klipper/Moonraker выигрывает у закрытых прошивок.
 
-- 🌙 **Темная тема** - современный темный интерфейс
-- 📊 **Виджеты** - модульные компоненты для мониторинга принтера
-- 🔄 **WebSocket** - обновления в реальном времени
-- 🧩 **Web Components** - переиспользуемые компоненты
-- 💾 **Локальный стор** - централизованное управление состоянием
-- 🚀 **Нативный HTML/JS** - без фреймворков, быстрая загрузка
+## Почему это интересно
 
-## 📦 Структура проекта
+Большинство прошивок для 3D-принтеров — чёрный ящик. Klipper устроен иначе: принтер это просто **JSON-RPC сервер**. Любой клиент, любой UI, любая интеграция — без модификации firmware.
+
+Этот проект показывает: полноценный дашборд реального времени пишется за вечер на ванильном JS, **без единой зависимости в рантайме**.
+
+## Что внутри
+
+10 Web Components, каждый автономен:
+
+| Виджет | Данные |
+|--------|-------|
+| `temperature-widget` | Температура экструдера и стола (текущая / целевая) |
+| `status-widget` | Состояние принтера, имя файла, время печати |
+| `progress-widget` | Круговой индикатор прогресса + оставшееся время |
+| `toolhead-widget` | Позиция X/Y/Z, скорость, управление |
+| `fan-widget` | Скорость обдува |
+| `system-widget` | CPU, температура Raspberry Pi, память |
+| `control-widget` | Старт / пауза / стоп, температурные пресеты |
+| `chart-widget` | График температур в реальном времени |
+| `history-widget` | История последних печатей |
+| `files-widget` | Файловый менеджер на принтере |
+
+## Архитектура
 
 ```
 moonraker-custom-ui/
-├── index.html              # Главная страница
-├── package.json            # npm скрипты для запуска
-├── styles/
-│   └── main.css           # Стили с темной темой
-└── js/
-    ├── config.js          # Конфигурация (URL, API ключ)
-    ├── app.js             # Главный файл приложения
-    ├── services/
-    │   ├── moonraker-api.js  # REST клиент для Moonraker API
-    │   └── store.js          # Локальный стор/репозиторий
-    └── components/
-        ├── temperature-widget.js  # Виджет температуры
-        ├── status-widget.js       # Виджет статуса
-        └── progress-widget.js     # Виджет прогресса
+├── index.html               # 10 custom elements — никаких зависимостей
+├── js/
+│   ├── app.js               # Bootstrap: WebSocket + store init
+│   ├── config.js            # moonrakerUrl, apiKey
+│   ├── services/
+│   │   ├── moonraker-api.js # REST + WebSocket клиент (JSON-RPC)
+│   │   ├── store.js         # Centralized state store
+│   │   └── api-instance.js  # Singleton
+│   └── components/          # 10 Web Components (HTMLElement extends)
+└── styles/main.css          # CSS variables, тёмная тема, grid layout
 ```
 
-## 🚀 Запуск
+**Паттерн компонентов:**
 
-### ⚡ Быстрый запуск (Windows)
-
-**Двойной клик по файлу:**
-- `start.bat` - запуск с автоматическим открытием браузера
-- `start-simple.bat` - простой запуск без открытия браузера
-
-### Вариант 1: Через npx напрямую (рекомендуется)
-
-**В PowerShell (если разрешено):**
-```powershell
-npx serve . -p 3000 -o
+```javascript
+class TemperatureWidget extends HTMLElement {
+  connectedCallback() {
+    store.subscribe('temperature', data => this.render(data));
+  }
+}
+customElements.define('temperature-widget', TemperatureWidget);
 ```
 
-**В CMD (Command Prompt):**
-```cmd
-npx serve . -p 3000 -o
-```
+Store получает данные через WebSocket `notify_status_update`, раздаёт подписчикам — каждый виджет обновляется независимо.
 
-### Вариант 2: Через npm (если политика PowerShell разрешена)
+## Стек
 
-Если нужно изменить политику выполнения PowerShell:
-```powershell
-# Запустите PowerShell от имени администратора и выполните:
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-```
+| Технология | Почему |
+|-----------|--------|
+| Vanilla JS (ES6 modules) | Нет фреймворка = нет абстракций между кодом и браузером |
+| Web Components API | Нативная изоляция, нет virtual DOM |
+| WebSocket + JSON-RPC | Moonraker Protocol — нативный для Klipper |
+| CSS Variables | Тёмная тема без препроцессоров |
+| **Нет npm в рантайме** | Всё что нужно — уже в браузере |
 
-Затем можно использовать:
-```bash
-npm start        # Запуск на порту 3000
-npm run dev      # Запуск + автоматическое открытие браузера
-```
-
-### Вариант 3: Другие статические серверы
+## Запуск
 
 ```bash
-# http-server
-npx http-server . -p 3000
-
-# python (если установлен)
+# Просто статический сервер (npm только для этого)
+npm start        # localhost:3000
+# или
 python -m http.server 3000
 ```
 
-### ⚠️ Важно
-
-Для работы WebSocket и CORS **обязательно** используйте локальный сервер. Простое открытие `index.html` в браузере не будет работать из-за ограничений безопасности браузера.
-
-## ⚙️ Настройка
-
-Все настройки находятся в файле `js/config.js`:
+Настроить `js/config.js`:
 
 ```javascript
 export const config = {
-    // Адрес Moonraker API
-    moonrakerUrl: 'http://localhost:7125',
-    
-    // API ключ для Moonraker
-    apiKey: 'ваш-api-ключ'
+    moonrakerUrl: 'http://<ip-принтера>:7125',
+    apiKey: 'ваш-ключ'
 };
 ```
 
-### Настройка подключения
+## Moonraker: минимальный CORS
 
-1. **Изменение адреса Moonraker**: отредактируйте `moonrakerUrl` в `js/config.js`
-2. **API ключ**: уже настроен в `js/config.js` (ключ передается автоматически во всех запросах)
+В `moonraker.conf`:
 
-API ключ добавляется в заголовок `X-Api-Key` для HTTP запросов и в параметр `token` для WebSocket подключений.
-
-### 🔧 Настройка CORS в Moonraker
-
-**Если вы видите ошибку CORS**, нужно настроить доверенные узлы в Moonraker.
-
-📖 **Подробная инструкция**: см. файл [`MOONRAKER_SETUP.md`](MOONRAKER_SETUP.md)
-
-**Кратко:**
-1. Откройте `moonraker.conf`
-2. Добавьте в секцию `[authorization]`:
 ```ini
+[authorization]
 trusted_clients:
+    192.168.x.x   # IP вашей машины
     127.0.0.1
-    localhost
-    192.168.31.75  # IP вашего компьютера
 ```
-3. Перезапустите Moonraker
 
-## 🎨 Виджеты
+Подробнее — [`MOONRAKER_SETUP.md`](MOONRAKER_SETUP.md), решение типичных проблем — [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md).
 
-### 🌡️ Температура
-- Текущая и целевая температура экструдера
-- Текущая и целевая температура стола
-- Визуальные индикаторы прогресса нагрева
+---
 
-### 📊 Статус
-- Текущее состояние принтера
-- Имя файла печати
-- Время печати
-
-### 📈 Прогресс
-- Круговой индикатор прогресса
-- Оставшееся время печати
-
-## 🔧 Технологии
-
-- **HTML5** - структура
-- **CSS3** - стилизация с CSS переменными
-- **Vanilla JavaScript (ES6+)** - логика приложения
-- **Web Components API** - модульные виджеты
-- **Fetch API** - HTTP запросы
-- **WebSocket API** - обновления в реальном времени
-
-## 📡 Moonraker API
-
-Приложение использует следующие endpoints:
-- `GET /printer/status` - статус принтера
-- `GET /printer/objects/query` - данные о температуре и печати
-- `WebSocket /websocket` - подписка на обновления
-
-## 🎯 Планы развития
-
-- [ ] Управление печатью (старт/пауза/стоп)
-- [ ] Список файлов для печати
-- [ ] История печатей
-- [ ] Настройки принтера
-- [ ] Графики температуры
-- [ ] Камера (если доступна)
-
-## 🔔 WebSocket события (Moonraker)
-
-Основное событие: `notify_status_update`
-- `params[0].heater_bed.temperature|target`
-- `params[0].extruder.temperature|target`
-- `params[0].print_stats.state|filename|progress|print_duration|total_duration`
-- `params[0].virtual_sdcard.progress`
-
-Подписка, которую используем:
-- Метод: `printer.objects.subscribe`
-- Объекты: `heater_bed[temperature,target]`, `extruder[temperature,target]`, `print_stats[...]`, `virtual_sdcard[progress]`
-
-Формат JSON-RPC кадра:
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "notify_status_update",
-  "params": [
-    {
-      "heater_bed": { "temperature": 60, "target": 60 },
-      "extruder": { "temperature": 210, "target": 210 },
-      "print_stats": {
-        "state": "printing",
-        "filename": "...",
-        "progress": 0.67,
-        "print_duration": 22656,
-        "total_duration": 22748
-      },
-      "virtual_sdcard": { "progress": 0.67 }
-    }
-  ]
-}
-```
+**Вывод из проекта:** 300 строк кода, 0 рантайм-зависимостей, полноценный дашборд. Открытая архитектура — это не просто слова.
